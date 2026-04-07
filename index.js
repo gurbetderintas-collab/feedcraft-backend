@@ -1,7 +1,6 @@
 const express  = require('express');
 const cors     = require('cors');
 const axios    = require('axios');
-const crypto   = require('crypto');
 const NodeCache = require('node-cache');
 
 const app   = express();
@@ -11,13 +10,12 @@ const PORT  = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json({ limit: '20mb' }));
 
-/* ── XML Parser ── */
 function extractTag(block, tag) {
   const pats = [
-    new RegExp(`<g:${tag}><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/g:${tag}>`, 'i'),
-    new RegExp(`<${tag}><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/${tag}>`, 'i'),
-    new RegExp(`<g:${tag}>([^<]*)<\\/g:${tag}>`, 'i'),
-    new RegExp(`<${tag}>([^<]*)<\\/${tag}>`, 'i'),
+    new RegExp('<g:' + tag + '><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/g:' + tag + '>', 'i'),
+    new RegExp('<' + tag + '><!\\[CDATA\\[([\\s\\S]*?)\\]\\]><\\/' + tag + '>', 'i'),
+    new RegExp('<g:' + tag + '>([^<]*)<\\/g:' + tag + '>', 'i'),
+    new RegExp('<' + tag + '>([^<]*)<\\/' + tag + '>', 'i'),
   ];
   for (const re of pats) {
     const m = block.match(re);
@@ -49,33 +47,27 @@ function parseXML(xmlStr) {
   return items;
 }
 
-function calcInstallment(price, count = 3) {
+function calcInstallment(price, count) {
+  count = count || 3;
   const num = parseFloat(String(price || 0).replace(/[^0-9.,]/g, '').replace(',', '.'));
   if (!num) return '';
   return Math.round(num / count).toLocaleString('tr-TR') + ' TL x ' + count + ' Taksit';
 }
 
-const esc = s => String(s || '')
-  .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-  .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+function esc(s) {
+  return String(s || '')
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
 
-/* ── GET / ── */
-app.get('/', (req, res) => {
-  res.json({
-    status: 'ok',
-    service: 'FeedCraft Backend v3',
-    endpoints: {
-      'POST /render-feed': 'XML + şablon → Meta XML (dinamik görsellerle)',
-      'GET  /render-img':  'PNG görsel üret',
-      'GET  /proxy':       'XML CORS proxy',
-    },
-  });
+app.get('/', function(req, res) {
+  res.json({ status: 'ok', service: 'FeedCraft Backend v3' });
 });
 
-/* ── POST /render-feed ── */
-app.post('/render-feed', async (req, res) => {
+app.post('/render-feed', async function(req, res) {
   try {
-    const { xmlUrl, xmlContent, cfg = {} } = req.body;
+    const { xmlUrl, xmlContent, cfg } = req.body;
+    const options = cfg || {};
     let xmlStr = xmlContent;
     if (!xmlStr && xmlUrl) {
       const k = 'xml_' + xmlUrl;
@@ -87,36 +79,35 @@ app.post('/render-feed', async (req, res) => {
       }
     }
     if (!xmlStr) return res.status(400).json({ error: 'xmlUrl veya xmlContent gerekli' });
-
     const products = parseXML(xmlStr);
-    if (!products.length) return res.status(400).json({ error: 'Ürün bulunamadı' });
-
-    const BASE = process.env.BASE_URL || `https://${req.headers.host}`;
-
-    let xml = `<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">
-<channel>
-<title>${esc(cfg.brand || 'FeedCraft')} Meta Katalog</title>
-<link>${BASE}</link>
-<description>FeedCraft dinamik görsel katalogu</description>
-`;
-    products.forEach(p => {
-      const taksit = calcInstallment(p.price, cfg.taksitAdet || 3);
-      // Görsel: şablon varsa dinamik, yoksa orijinal
-      const imageUrl = p.image_link;
-      xml += `  <item>
-    <g:id>${esc(p.id)}</g:id>
-    <g:title>${esc(p.title)}</g:title>
-    <g:description>${esc(p.title + (taksit ? ' — ' + taksit : ''))}</g:description>
-    <g:price>${p.fiyat.toFixed(2)} TRY</g:price>
-    <g:availability>${esc(p.availability)}</g:availability>
-    <g:condition>${esc(p.condition)}</g:condition>
-    <g:brand>${esc(p.brand || cfg.brand || '')}</g:brand>
-    <g:image_link>${esc(imageUrl)}</g:image_link>
-    <g:link>${esc(p.link)}</g:link>
-  </item>\n`;
+    if (!products.length) return res.status(400).json({ error: 'Urun bulunamadi' });
+    const BASE = process.env.BASE_URL || ('https://' + req.headers.host);
+    let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">\n<channel>\n';
+    xml += '<title>' + esc(options.brand || 'FeedCraft') + ' Meta Katalog</title>\n';
+    xml += '<link>' + BASE + '</link>\n';
+    products.forEach(function(p) {
+      const taksit = calcInstallment(p.price, options.taksitAdet);
+      const badge = options.badge || '';
+      const badgeColor = options.badgeColor || '%23e53935';
+      const brand = options.brand || '';
+      const imageUrl = BASE + '/render-img?url=' + encodeURIComponent(p.image_link) +
+        '&price=' + p.fiyat +
+        '&badge=' + encodeURIComponent(badge) +
+        '&badgeColor=' + encodeURIComponent(badgeColor) +
+        '&brand=' + encodeURIComponent(brand);
+      xml += '  <item>\n';
+      xml += '    <g:id>' + esc(p.id) + '</g:id>\n';
+      xml += '    <g:title>' + esc(p.title) + '</g:title>\n';
+      xml += '    <g:description>' + esc(p.title + (taksit ? ' - ' + taksit : '')) + '</g:description>\n';
+      xml += '    <g:price>' + p.fiyat.toFixed(2) + ' TRY</g:price>\n';
+      xml += '    <g:availability>' + esc(p.availability) + '</g:availability>\n';
+      xml += '    <g:condition>' + esc(p.condition) + '</g:condition>\n';
+      xml += '    <g:brand>' + esc(p.brand || brand) + '</g:brand>\n';
+      xml += '    <g:image_link>' + esc(imageUrl) + '</g:image_link>\n';
+      xml += '    <g:link>' + esc(p.link) + '</g:link>\n';
+      xml += '  </item>\n';
     });
-    xml += `</channel>\n</rss>`;
+    xml += '</channel>\n</rss>';
     res.set('Content-Type', 'application/xml; charset=utf-8');
     res.send(xml);
   } catch (err) {
@@ -125,77 +116,80 @@ app.post('/render-feed', async (req, res) => {
   }
 });
 
-/* ── GET /render-img ── */
-app.get('/render-img', async (req, res) => {
+app.get('/render-img', async function(req, res) {
   try {
-    const { url, price, badge, badgeColor, brand } = req.query;
+    var url = req.query.url;
+    var price = req.query.price;
+    var badge = req.query.badge ? decodeURIComponent(req.query.badge) : '';
+    var badgeColor = req.query.badgeColor ? decodeURIComponent(req.query.badgeColor) : '#e53935';
+    var brand = req.query.brand ? decodeURIComponent(req.query.brand) : '';
+
     if (!url) return res.status(400).send('url gerekli');
 
-    // canvas modülü opsiyonel — yoksa orijinal görsele yönlendir
-    let canvas;
-    try { canvas = require('canvas'); } catch(e) {
-      return res.redirect(url);
-    }
+    var canvasLib;
+    try { canvasLib = require('canvas'); } catch(e) { return res.redirect(url); }
 
-    const { createCanvas, loadImage } = canvas;
-    const cvs = createCanvas(1080, 1080);
-    const ctx = cvs.getContext('2d');
+    var createCanvas = canvasLib.createCanvas;
+    var loadImage = canvasLib.loadImage;
+    var cvs = createCanvas(1080, 1080);
+    var ctx = cvs.getContext('2d');
 
-    // Arka plan
     ctx.fillStyle = '#f5f5f5';
     ctx.fillRect(0, 0, 1080, 1080);
 
-    // Ürün görseli
     try {
-      const imgResp = await axios.get(url, { responseType: 'arraybuffer', timeout: 8000 });
-      const img = await loadImage(Buffer.from(imgResp.data));
-      const ratio = Math.min(1080 / img.width, 1080 / img.height);
-      const w = img.width * ratio, h = img.height * ratio;
+      var imgResp = await axios.get(url, { responseType: 'arraybuffer', timeout: 8000, headers: { 'User-Agent': 'FeedCraft/1.0' } });
+      var img = await loadImage(Buffer.from(imgResp.data));
+      var ratio = Math.min(1080 / img.width, 1080 / img.height);
+      var w = img.width * ratio;
+      var h = img.height * ratio;
       ctx.drawImage(img, (1080 - w) / 2, (1080 - h) / 2, w, h);
-    } catch(e) { console.warn('Görsel yüklenemedi:', e.message); }
+    } catch(e) { console.warn('Gorsel yuklenemedi:', e.message); }
 
-    // Alt bant
-    const grad = ctx.createLinearGradient(0, 820, 0, 1080);
+    // Alt gradient
+    var grad = ctx.createLinearGradient(0, 820, 0, 1080);
     grad.addColorStop(0, 'rgba(0,0,0,0)');
-    grad.addColorStop(1, 'rgba(0,0,0,0.7)');
+    grad.addColorStop(1, 'rgba(0,0,0,0.72)');
     ctx.fillStyle = grad;
     ctx.fillRect(0, 820, 1080, 260);
 
     // Fiyat
     if (price) {
-      const num = parseFloat(price.replace(/[^0-9.,]/g,'').replace(',','.'));
+      var num = parseFloat(String(price).replace(/[^0-9.,]/g,'').replace(',','.'));
       if (num) {
-        ctx.font = 'bold 64px Arial';
+        ctx.font = 'bold 68px sans-serif';
         ctx.fillStyle = '#ffffff';
-        ctx.fillText(num.toLocaleString('tr-TR') + ' TL', 40, 980);
+        ctx.textBaseline = 'middle';
+        ctx.fillText(num.toLocaleString('tr-TR') + ' TL', 40, 970);
       }
     }
 
     // Rozet
     if (badge) {
-      ctx.fillStyle = badgeColor || '#e53935';
-      roundRect(ctx, 24, 24, 160, 54, 27);
+      ctx.fillStyle = badgeColor;
+      ctx.beginPath();
+      ctx.roundRect(20, 20, 180, 56, 28);
       ctx.fill();
-      ctx.font = 'bold 26px Arial';
+      ctx.font = 'bold 27px sans-serif';
       ctx.fillStyle = '#ffffff';
       ctx.textAlign = 'center';
-      ctx.fillText(badge, 104, 58);
-      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(badge, 110, 48);
     }
 
     // Marka
     if (brand) {
-      ctx.font = 'bold 22px Arial';
-      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      ctx.font = 'bold 24px sans-serif';
+      ctx.fillStyle = 'rgba(255,255,255,0.92)';
       ctx.textAlign = 'right';
-      ctx.fillText(brand, 1050, 50);
-      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillText(brand, 1055, 26);
     }
 
-    const png = cvs.toBuffer('image/png');
+    var png = cvs.toBuffer('image/png');
     res.set('Content-Type', 'image/png');
     res.set('Cache-Control', 'public, max-age=3600');
-    res.send(png);
+    return res.send(png);
   } catch (err) {
     console.error(err.message);
     if (req.query.url) return res.redirect(req.query.url);
@@ -203,28 +197,14 @@ app.get('/render-img', async (req, res) => {
   }
 });
 
-function roundRect(ctx, x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y);
-  ctx.quadraticCurveTo(x+w,y,x+w,y+r);
-  ctx.lineTo(x+w,y+h-r);
-  ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
-  ctx.lineTo(x+r,y+h);
-  ctx.quadraticCurveTo(x,y+h,x,y+h-r);
-  ctx.lineTo(x,y+r);
-  ctx.quadraticCurveTo(x,y,x+r,y);
-  ctx.closePath();
-}
-
-/* ── GET /proxy ── */
-app.get('/proxy', async (req, res) => {
+app.get('/proxy', async function(req, res) {
   try {
-    const { url } = req.query;
+    var url = req.query.url;
     if (!url) return res.status(400).json({ error: 'url gerekli' });
-    const k = 'px_' + url;
-    let content = cache.get(k);
+    var k = 'px_' + url;
+    var content = cache.get(k);
     if (!content) {
-      const r = await axios.get(url, { timeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0 FeedCraft/1.0' } });
+      var r = await axios.get(url, { timeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0 FeedCraft/1.0' } });
       content = r.data;
       cache.set(k, content);
     }
@@ -235,6 +215,6 @@ app.get('/proxy', async (req, res) => {
   }
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`FeedCraft v3 çalışıyor → port ${PORT}`);
+app.listen(PORT, '0.0.0.0', function() {
+  console.log('FeedCraft v3 calisiyor port ' + PORT);
 });
