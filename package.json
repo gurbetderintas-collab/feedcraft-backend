@@ -1,7 +1,7 @@
 {
   "name": "feedcraft-backend",
   "version": "1.0.0",
-  "description": "FeedCraft - Meta Katalog Feed + Dinamik Görsel Üretici",
+  "description": "FeedCraft Backend",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
