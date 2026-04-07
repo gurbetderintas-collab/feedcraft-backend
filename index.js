@@ -3,7 +3,6 @@ const cors     = require('cors');
 const axios    = require('axios');
 const crypto   = require('crypto');
 const NodeCache = require('node-cache');
-const { renderTemplate } = require('./templateRenderer');
 
 const app   = express();
 const cache = new NodeCache({ stdTTL: 3600 });
@@ -63,63 +62,20 @@ const esc = s => String(s || '')
 /* ── GET / ── */
 app.get('/', (req, res) => {
   res.json({
-    status: 'ok', service: 'FeedCraft Backend v2',
+    status: 'ok',
+    service: 'FeedCraft Backend v3',
     endpoints: {
-      'POST /render':       'Şablon + ürün → PNG',
-      'GET  /render-img':   'URL param ile PNG (Meta buradan çeker)',
-      'POST /render-feed':  'XML + şablon → Meta XML (dinamik görsellerle)',
-      'GET  /proxy':        'XML CORS proxy',
+      'POST /render-feed': 'XML + şablon → Meta XML (dinamik görsellerle)',
+      'GET  /render-img':  'PNG görsel üret',
+      'GET  /proxy':       'XML CORS proxy',
     },
   });
 });
 
-/* ── POST /render — Tek PNG ── */
-app.post('/render', async (req, res) => {
-  try {
-    const { template, product } = req.body;
-    if (!template || !product) return res.status(400).json({ error: 'template ve product gerekli' });
-    const key = 'r_' + crypto.createHash('md5').update(JSON.stringify({ template, product })).digest('hex');
-    let png = cache.get(key);
-    if (!png) { png = await renderTemplate(template, product); cache.set(key, png); }
-    res.set('Content-Type', 'image/png');
-    res.set('Cache-Control', 'public, max-age=3600');
-    res.send(png);
-  } catch (err) {
-    console.error(err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-/* ── GET /render-img — Meta buradan PNG çeker ── */
-app.get('/render-img', async (req, res) => {
-  try {
-    const { tpl, prd } = req.query;
-    if (!tpl || !prd) return res.status(400).send('tpl ve prd gerekli');
-    const key = 'ri_' + crypto.createHash('md5').update(tpl + prd).digest('hex');
-    let png = cache.get(key);
-    if (!png) {
-      const template = JSON.parse(decodeURIComponent(tpl));
-      const product  = JSON.parse(decodeURIComponent(prd));
-      png = await renderTemplate(template, product);
-      cache.set(key, png);
-    }
-    res.set('Content-Type', 'image/png');
-    res.set('Cache-Control', 'public, max-age=3600');
-    res.send(png);
-  } catch (err) {
-    console.error(err.message);
-    try {
-      const prd = JSON.parse(decodeURIComponent(req.query.prd || '{}'));
-      if (prd.image_link) return res.redirect(prd.image_link);
-    } catch {}
-    res.status(500).send('Görsel üretilemedi');
-  }
-});
-
-/* ── POST /render-feed — XML + şablon → Meta XML ── */
+/* ── POST /render-feed ── */
 app.post('/render-feed', async (req, res) => {
   try {
-    const { xmlUrl, xmlContent, template, cfg = {} } = req.body;
+    const { xmlUrl, xmlContent, cfg = {} } = req.body;
     let xmlStr = xmlContent;
     if (!xmlStr && xmlUrl) {
       const k = 'xml_' + xmlUrl;
@@ -135,8 +91,7 @@ app.post('/render-feed', async (req, res) => {
     const products = parseXML(xmlStr);
     if (!products.length) return res.status(400).json({ error: 'Ürün bulunamadı' });
 
-    const BASE = process.env.BASE_URL || `http://localhost:${PORT}`;
-    const tplEncoded = encodeURIComponent(JSON.stringify(template || {}));
+    const BASE = process.env.BASE_URL || `https://${req.headers.host}`;
 
     let xml = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">
@@ -146,9 +101,9 @@ app.post('/render-feed', async (req, res) => {
 <description>FeedCraft dinamik görsel katalogu</description>
 `;
     products.forEach(p => {
-      const prdEncoded = encodeURIComponent(JSON.stringify(p));
-      const imageUrl   = `${BASE}/render-img?tpl=${tplEncoded}&prd=${prdEncoded}`;
-      const taksit     = calcInstallment(p.price, cfg.taksitAdet || 3);
+      const taksit = calcInstallment(p.price, cfg.taksitAdet || 3);
+      // Görsel: şablon varsa dinamik, yoksa orijinal
+      const imageUrl = p.image_link;
       xml += `  <item>
     <g:id>${esc(p.id)}</g:id>
     <g:title>${esc(p.title)}</g:title>
@@ -170,7 +125,98 @@ app.post('/render-feed', async (req, res) => {
   }
 });
 
-/* ── GET /proxy — CORS bypass ── */
+/* ── GET /render-img ── */
+app.get('/render-img', async (req, res) => {
+  try {
+    const { url, price, badge, badgeColor, brand } = req.query;
+    if (!url) return res.status(400).send('url gerekli');
+
+    // canvas modülü opsiyonel — yoksa orijinal görsele yönlendir
+    let canvas;
+    try { canvas = require('canvas'); } catch(e) {
+      return res.redirect(url);
+    }
+
+    const { createCanvas, loadImage } = canvas;
+    const cvs = createCanvas(1080, 1080);
+    const ctx = cvs.getContext('2d');
+
+    // Arka plan
+    ctx.fillStyle = '#f5f5f5';
+    ctx.fillRect(0, 0, 1080, 1080);
+
+    // Ürün görseli
+    try {
+      const imgResp = await axios.get(url, { responseType: 'arraybuffer', timeout: 8000 });
+      const img = await loadImage(Buffer.from(imgResp.data));
+      const ratio = Math.min(1080 / img.width, 1080 / img.height);
+      const w = img.width * ratio, h = img.height * ratio;
+      ctx.drawImage(img, (1080 - w) / 2, (1080 - h) / 2, w, h);
+    } catch(e) { console.warn('Görsel yüklenemedi:', e.message); }
+
+    // Alt bant
+    const grad = ctx.createLinearGradient(0, 820, 0, 1080);
+    grad.addColorStop(0, 'rgba(0,0,0,0)');
+    grad.addColorStop(1, 'rgba(0,0,0,0.7)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 820, 1080, 260);
+
+    // Fiyat
+    if (price) {
+      const num = parseFloat(price.replace(/[^0-9.,]/g,'').replace(',','.'));
+      if (num) {
+        ctx.font = 'bold 64px Arial';
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(num.toLocaleString('tr-TR') + ' TL', 40, 980);
+      }
+    }
+
+    // Rozet
+    if (badge) {
+      ctx.fillStyle = badgeColor || '#e53935';
+      roundRect(ctx, 24, 24, 160, 54, 27);
+      ctx.fill();
+      ctx.font = 'bold 26px Arial';
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center';
+      ctx.fillText(badge, 104, 58);
+      ctx.textAlign = 'left';
+    }
+
+    // Marka
+    if (brand) {
+      ctx.font = 'bold 22px Arial';
+      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      ctx.textAlign = 'right';
+      ctx.fillText(brand, 1050, 50);
+      ctx.textAlign = 'left';
+    }
+
+    const png = cvs.toBuffer('image/png');
+    res.set('Content-Type', 'image/png');
+    res.set('Cache-Control', 'public, max-age=3600');
+    res.send(png);
+  } catch (err) {
+    console.error(err.message);
+    if (req.query.url) return res.redirect(req.query.url);
+    res.status(500).send('Hata');
+  }
+});
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.lineTo(x+w-r,y);
+  ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+  ctx.lineTo(x+w,y+h-r);
+  ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  ctx.lineTo(x+r,y+h);
+  ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+  ctx.lineTo(x,y+r);
+  ctx.quadraticCurveTo(x,y,x+r,y);
+  ctx.closePath();
+}
+
+/* ── GET /proxy ── */
 app.get('/proxy', async (req, res) => {
   try {
     const { url } = req.query;
@@ -189,26 +235,6 @@ app.get('/proxy', async (req, res) => {
   }
 });
 
-/* ── GET /image — Basit overlay (eski uyumluluk) ── */
-app.get('/image', async (req, res) => {
-  const { url, price, badge, badgeColor, priceColor, brand } = req.query;
-  if (!url) return res.status(400).send('url gerekli');
-  const template = {
-    elements: [
-      { type:'shape', x:0, y:880, w:1080, h:200, bg:'#000000', bgOpacity:0.55, radius:0, fontSize:0, color:'transparent', fontWeight:'400', textAlign:'left' },
-      ...(price ? [{ type:'text', text: parseFloat(price).toLocaleString('tr-TR') + ' TL', x:30, y:900, w:700, h:80, fontSize:56, fontWeight:'700', color: priceColor||'#ffffff', bg:'transparent', bgOpacity:0, radius:0, textAlign:'left' }] : []),
-      ...(badge ? [{ type:'text', text: badge, x:24, y:24, w:150, h:52, fontSize:22, fontWeight:'700', color:'#ffffff', bg: badgeColor||'#e53935', bgOpacity:1, radius:26, textAlign:'center' }] : []),
-      ...(brand ? [{ type:'text', text: brand, x:840, y:24, w:220, h:40, fontSize:18, fontWeight:'600', color:'#ffffff', bg:'#00000066', bgOpacity:1, radius:6, textAlign:'center' }] : []),
-    ],
-  };
-  try {
-    const png = await renderTemplate(template, { image_link: url, price });
-    res.set('Content-Type', 'image/png');
-    res.set('Cache-Control', 'public, max-age=3600');
-    res.send(png);
-  } catch {
-    res.redirect(url);
-  }
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`FeedCraft v3 çalışıyor → port ${PORT}`);
 });
-
-app.listen(PORT, () => console.log(`FeedCraft v2 → http://localhost:${PORT}`));

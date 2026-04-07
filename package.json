@@ -1,7 +1,6 @@
 {
   "name": "feedcraft-backend",
   "version": "1.0.0",
-  "description": "FeedCraft Backend",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -11,8 +10,7 @@
     "axios": "^1.6.0",
     "canvas": "^2.11.2",
     "cors": "^2.8.5",
-    "node-cache": "^5.1.2",
-    "xml2js": "^0.6.2"
+    "node-cache": "^5.1.2"
   },
   "engines": {
     "node": ">=18.0.0"
